@@ -31,5 +31,9 @@ def _parseFile(filename):
     return out_net
 
 
-init_net = _parseFile('init_net.pb')
+try:
+    init_net = _parseFile('init_net.pb')
+except IOError:
+    init_net = _parseFile('exec_net.pb')
+
 predict_net = _parseFile('predict_net.pb')
