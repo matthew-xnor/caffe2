@@ -24,47 +24,33 @@
 #include "caffe2/utils/string_utils.h"
 
 CAFFE2_DEFINE_string(net, "", "The given net to benchmark.");
-CAFFE2_DEFINE_string(
-    init_net,
-    "",
+CAFFE2_DEFINE_string(init_net, "",
     "The given net to initialize any parameters.");
-CAFFE2_DEFINE_string(
-    input,
-    "",
+CAFFE2_DEFINE_string(input, "",
     "Input that is needed for running the network. If "
     "multiple input needed, use comma separated string.");
-CAFFE2_DEFINE_string(
-    input_file,
-    "",
+CAFFE2_DEFINE_string(input_file, "",
     "Input file that contain the serialized protobuf for "
     "the input blobs. If multiple input needed, use comma "
     "separated string. Must have the same number of items "
     "as input does.");
-CAFFE2_DEFINE_string(
-    input_dims,
-    "",
+CAFFE2_DEFINE_string(input_dims, "1,720,1080,4",
     "Alternate to input_files, if all inputs are simple "
     "float TensorCPUs, specify the dimension using comma "
     "separated numbers. If multiple input needed, use "
     "semicolon to separate the dimension of different "
     "tensors.");
-CAFFE2_DEFINE_string(
-    output,
-    "",
+CAFFE2_DEFINE_string(output, "",
     "Output that should be dumped after the execution "
     "finishes. If multiple outputs are needed, use comma "
     "separated string. If you want to dump everything, pass "
     "'*' as the output value.");
-CAFFE2_DEFINE_string(
-    output_folder,
-    "",
+CAFFE2_DEFINE_string(output_folder, "",
     "The folder that the output should be written to. This "
     "folder must already exist in the file system.");
 CAFFE2_DEFINE_int(warmup, 0, "The number of iterations to warm up.");
 CAFFE2_DEFINE_int(iter, 10, "The number of iterations to run.");
-CAFFE2_DEFINE_bool(
-    run_individual,
-    false,
+CAFFE2_DEFINE_bool(run_individual, false,
     "Whether to benchmark individual operators.");
 
 CAFFE2_DEFINE_bool(force_engine, false, "Force engine field for all operators");
@@ -84,6 +70,9 @@ int main(int argc, char** argv) {
   caffe2::NetDef net_def;
   CAFFE_ENFORCE(ReadProtoFromFile(caffe2::FLAGS_init_net, &net_def));
   CAFFE_ENFORCE(workspace->RunNetOnce(net_def));
+
+  // Load the main network.
+  CAFFE_ENFORCE(ReadProtoFromFile(caffe2::FLAGS_net, &net_def));
 
   // Load input.
   if (caffe2::FLAGS_input.size()) {
@@ -112,20 +101,24 @@ int main(int argc, char** argv) {
         for (const string& s : input_dims_str) {
           input_dims.push_back(caffe2::stoi(s));
         }
+        VLOG(4) << "GetBlob(" << input_names[i] << ")...";
         caffe2::TensorCPU* tensor =
             workspace->GetBlob(input_names[i])->GetMutable<caffe2::TensorCPU>();
         tensor->Resize(input_dims);
         tensor->mutable_data<float>();
       }
     } else {
-      CAFFE_THROW(
-          "You requested input tensors, but neither input_file nor "
-          "input_dims is set.");
+      // CAFFE_THROW(
+      //     "You requested input tensors, but neither input_file nor "
+      //     "input_dims is set.");
+      // This comes from https://github.com/caffe2/caffe2/issues/328:
+      auto* b = workspace->GetBlob(net_def.external_input(0))
+                ->GetMutable<caffe2::TensorCPU>();
+      b->Resize(split(caffe2::FLAGS_input_dims, ","));
+      b->mutable_data<uint8_t>();
     }
   }
 
-  // Run main network.
-  CAFFE_ENFORCE(ReadProtoFromFile(caffe2::FLAGS_net, &net_def));
   // force changing engine and algo
   if (caffe2::FLAGS_force_engine) {
     LOG(INFO) << "force engine be: " << caffe2::FLAGS_engine;
@@ -141,8 +134,12 @@ int main(int argc, char** argv) {
           ->set_s(caffe2::FLAGS_algo);
     }
   }
+  VLOG(4) << "CreateNet...";
   caffe2::NetBase* net = workspace->CreateNet(net_def);
   CHECK_NOTNULL(net);
+  VLOG(4) << "net->Run()";
+  CAFFE_ENFORCE(net->Run());
+  VLOG(4) << "TEST_Benchmark...";
   net->TEST_Benchmark(
       caffe2::FLAGS_warmup, caffe2::FLAGS_iter, caffe2::FLAGS_run_individual);
 
@@ -155,6 +152,7 @@ int main(int argc, char** argv) {
       output_names = workspace->Blobs();
     }
     for (const string& name : output_names) {
+      VLOG(4) << "DEBUG " << __func__ << ": output name=" << name;
       CAFFE_ENFORCE(
           workspace->HasBlob(name),
           "You requested a non-existing blob: ",
