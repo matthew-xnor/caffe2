@@ -354,10 +354,10 @@ class ConvPoolOpBase : public Operator<Context> {
     }
     switch (order_) {
       case StorageOrder::NHWC:
-        // VLOG(2) << "Running NHWC";
+        VLOG(2) << "Running NHWC";
         return RunOnDeviceWithOrderNHWC();
       case StorageOrder::NCHW:
-        // VLOG(2) << "Running NCHW";
+        VLOG(2) << "Running NCHW";
         return RunOnDeviceWithOrderNCHW();
       default:
         CAFFE_THROW("Unknown Storage order: ", order_);

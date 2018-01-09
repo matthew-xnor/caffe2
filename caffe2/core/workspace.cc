@@ -189,10 +189,10 @@ const Blob* Workspace::GetBlob(const string& name) const {
   }
   LOG(WARNING) << "Blob " << name << " not in the workspace.";
   // TODO(Yangqing): do we want to always print out the list of blobs here?
-  // LOG(WARNING) << "Current blobs:";
-  // for (const auto& entry : blob_map_) {
-  //   LOG(WARNING) << entry.first;
-  // }
+  VLOG(1) << "Current blobs:";
+  for (const auto& entry : blob_map_) {
+    VLOG(1) << "    " << entry.first;
+  }
   return nullptr;
 }
 
