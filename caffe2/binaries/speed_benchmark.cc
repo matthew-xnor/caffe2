@@ -58,9 +58,24 @@ CAFFE2_DEFINE_string(engine, "", "Forced engine field value");
 CAFFE2_DEFINE_bool(force_algo, false, "Force algo arg for all operators");
 CAFFE2_DEFINE_string(algo, "", "Forced algo arg value");
 
+CAFFE2_DEFINE_string(net_type, "dag", "\"dag\" or \"simple\"");
+CAFFE2_DEFINE_int(num_workers, 4, "Level of parallelism (?).");
+
 using std::string;
 using std::unique_ptr;
 using std::vector;
+
+namespace {
+std::vector<int> split_to_ints(char sep, const string& the_string) {
+  vector<int> the_ints;
+  vector<string> ints_str = caffe2::split(sep, the_string);
+  for (const string& int_str : ints_str) {
+    the_ints.push_back(caffe2::stoi(int_str));
+  }
+  return the_ints;
+}
+}  // namespace
+
 
 int main(int argc, char** argv) {
   caffe2::GlobalInit(&argc, &argv);
@@ -73,6 +88,8 @@ int main(int argc, char** argv) {
 
   // Load the main network.
   CAFFE_ENFORCE(ReadProtoFromFile(caffe2::FLAGS_net, &net_def));
+  net_def.set_type(caffe2::FLAGS_net_type);
+  net_def.set_num_workers(caffe2::FLAGS_num_workers);
 
   // Load input.
   if (caffe2::FLAGS_input.size()) {
@@ -96,27 +113,28 @@ int main(int argc, char** argv) {
           input_dims_list.size(),
           "Input name and dims should have the same number of items.");
       for (int i = 0; i < input_names.size(); ++i) {
-        vector<string> input_dims_str = caffe2::split(',', input_dims_list[i]);
-        vector<int> input_dims;
-        for (const string& s : input_dims_str) {
-          input_dims.push_back(caffe2::stoi(s));
+        vector<int> input_dims = split_to_ints(',', input_dims_list[i]);
+        if (!workspace->HasBlob(input_names[i])) {
+          workspace->CreateBlob(input_names[i]);
         }
-        VLOG(4) << "GetBlob(" << input_names[i] << ")...";
         caffe2::TensorCPU* tensor =
             workspace->GetBlob(input_names[i])->GetMutable<caffe2::TensorCPU>();
         tensor->Resize(input_dims);
         tensor->mutable_data<float>();
       }
     } else {
-      // CAFFE_THROW(
-      //     "You requested input tensors, but neither input_file nor "
-      //     "input_dims is set.");
-      // This comes from https://github.com/caffe2/caffe2/issues/328:
-      auto* b = workspace->GetBlob(net_def.external_input(0))
-                ->GetMutable<caffe2::TensorCPU>();
-      b->Resize(split(caffe2::FLAGS_input_dims, ","));
-      b->mutable_data<uint8_t>();
+      CAFFE_THROW(
+          "You requested input tensors, but neither input_file nor "
+          "input_dims is set.");
     }
+  } else {
+    // This comes from https://github.com/caffe2/caffe2/issues/328:
+    VLOG(4) << "DEBUG: GetBlob(" << net_def.external_input(0) << ")...";
+    auto* b = workspace->GetBlob(net_def.external_input(0))
+              ->GetMutable<caffe2::TensorCPU>();
+    b->Resize(split_to_ints(',', caffe2::FLAGS_input_dims));
+    b->mutable_data<float>();
+    VLOG(4) << "DEBUG " << __func__ << ": TensorCPU b=" << b->DebugString();
   }
 
   // force changing engine and algo
@@ -134,12 +152,13 @@ int main(int argc, char** argv) {
           ->set_s(caffe2::FLAGS_algo);
     }
   }
-  VLOG(4) << "CreateNet...";
+
+  VLOG(4) << "DEBUG: CreateNet...";
   caffe2::NetBase* net = workspace->CreateNet(net_def);
   CHECK_NOTNULL(net);
-  VLOG(4) << "net->Run()";
+  VLOG(4) << "DEBUG: net->Run()";
   CAFFE_ENFORCE(net->Run());
-  VLOG(4) << "TEST_Benchmark...";
+  VLOG(4) << "DEBUG: TEST_Benchmark...";
   net->TEST_Benchmark(
       caffe2::FLAGS_warmup, caffe2::FLAGS_iter, caffe2::FLAGS_run_individual);
 
