@@ -58,7 +58,9 @@ CAFFE2_DEFINE_string(engine, "", "Forced engine field value");
 CAFFE2_DEFINE_bool(force_algo, false, "Force algo arg for all operators");
 CAFFE2_DEFINE_string(algo, "", "Forced algo arg value");
 
-CAFFE2_DEFINE_string(net_type, "dag", "\"dag\" or \"simple\"");
+CAFFE2_DEFINE_string(net_type, "dag",
+                     "simple, dag, async_{simple,dag,polling,scheduling}, "
+                     "singlethread_async");
 CAFFE2_DEFINE_int(num_workers, 4, "Level of parallelism (?).");
 
 using std::string;

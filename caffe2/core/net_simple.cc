@@ -83,10 +83,6 @@ bool SimpleNet::Run() {
   return true;
 }
 
-bool SimpleNet::RunAsync() {
-  return Run();
-}
-
 namespace {
 template <typename A, typename B>
 bool PairLargerThan(const std::pair<A, B>& x, const std::pair<A, B>& y) {
