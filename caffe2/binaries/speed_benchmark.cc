@@ -16,15 +16,13 @@
 
 #include <string>
 
+#include "caffe2/core/context_gpu.h"
 #include "caffe2/core/init.h"
 #include "caffe2/core/logging.h"
 #include "caffe2/core/operator.h"
 #include "caffe2/proto/caffe2.pb.h"
 #include "caffe2/utils/proto_utils.h"
 #include "caffe2/utils/string_utils.h"
-#ifdef WITH_CUDA
-#include <caffe2/core/context_gpu.h>
-#endif
 
 CAFFE2_DEFINE_string(net, "", "The given net to benchmark.");
 CAFFE2_DEFINE_string(init_net, "",
@@ -86,17 +84,18 @@ bool cmd_setup_cuda() {
   static bool already_done = false;
   if (already_done) { return true; }
   already_done = true;
-#ifdef WITH_CUDA
-  DeviceOption option;
-  option.set_device_type(CUDA);
-  new CUDAContext(option);
+  //#ifdef __CUDACC__
+  caffe2::DeviceOption option;
+  option.set_device_type(caffe2::CUDA);
+  new caffe2::CUDAContext(option);
   return true;
-#else
-  return false;
-#endif
+// #else
+//   return false;
+// #endif  // __CUDACC__
 }
 
-void SetDevice(const std::string& device_name, caffe2::NetDef* net_def) {
+caffe2::DeviceType SetDevice(const std::string& device_name,
+                             caffe2::NetDef* net_def) {
   caffe2::DeviceType device_type;
   if (!caffe2::DeviceType_Parse(device_name, &device_type)) {
     throw std::runtime_error("Invalid device type " + device_name);
@@ -107,6 +106,45 @@ void SetDevice(const std::string& device_name, caffe2::NetDef* net_def) {
     }
   }
   net_def->mutable_device_option()->set_device_type(device_type);
+  int num_ops_with_device_overridden = 0;
+  for (int i = 0; i < net_def->op_size(); ++i) {
+    caffe2::OperatorDef* op_def = net_def->mutable_op(i);
+    if (op_def->has_device_option() &&
+        op_def->device_option().device_type() != device_type) {
+      num_ops_with_device_overridden++;
+      op_def->mutable_device_option()->set_device_type(device_type);
+    }
+  }
+  if (num_ops_with_device_overridden > 0) {
+    LOG(WARNING) << ": Had to override device type in "
+                 << num_ops_with_device_overridden << " operators";
+  }
+  return device_type;
+}
+
+template <typename TensorType>
+void FeedBlob(caffe2::Workspace* workspace, const std::string name,
+              const vector<int>& dims) {
+  TensorType* t = workspace->GetBlob(name)->GetMutable<TensorType>();
+  t->Resize(dims);
+  t->template mutable_data<float>();
+  VLOG(4) << "DEBUG " << __func__ << ": " << name << ": " << t->DebugString();
+}
+
+void FeedBlob(caffe2::Workspace* workspace, const std::string name,
+              const vector<int>& dims, caffe2::DeviceType device_type) {
+  switch (device_type) {
+    case caffe2::CPU:
+      FeedBlob<caffe2::TensorCPU>(workspace, name, dims);
+      break;
+    case caffe2::CUDA:
+      FeedBlob<caffe2::TensorCUDA>(workspace, name, dims);
+      break;
+    default:
+      throw std::runtime_error("Not a valid device type: " +
+                               std::to_string(device_type) + " (" +
+                               caffe2::DeviceType_Name(device_type) + ')');
+  }
 }
 }  // namespace
 
@@ -118,7 +156,7 @@ int main(int argc, char** argv) {
   // Run initialization network.
   caffe2::NetDef net_def;
   CAFFE_ENFORCE(ReadProtoFromFile(caffe2::FLAGS_init_net, &net_def));
-  SetDevice(caffe2::FLAGS_device, &net_def);
+  caffe2::DeviceType device_type = SetDevice(caffe2::FLAGS_device, &net_def);
   CAFFE_ENFORCE(workspace->RunNetOnce(net_def));
 
   // Load the main network.
@@ -144,19 +182,14 @@ int main(int argc, char** argv) {
     } else if (caffe2::FLAGS_input_dims.size()) {
       vector<string> input_dims_list =
           caffe2::split(';', caffe2::FLAGS_input_dims);
-      CAFFE_ENFORCE_EQ(
-          input_names.size(),
-          input_dims_list.size(),
-          "Input name and dims should have the same number of items.");
+      CAFFE_ENFORCE_EQ(input_names.size(), input_dims_list.size(),
+                       "Input name and dims should have same number of items.");
       for (int i = 0; i < input_names.size(); ++i) {
         vector<int> input_dims = split_to_ints(',', input_dims_list[i]);
         if (!workspace->HasBlob(input_names[i])) {
           workspace->CreateBlob(input_names[i]);
         }
-        caffe2::TensorCPU* tensor =
-            workspace->GetBlob(input_names[i])->GetMutable<caffe2::TensorCPU>();
-        tensor->Resize(input_dims);
-        tensor->mutable_data<float>();
+        FeedBlob(workspace.get(), input_names[i], input_dims, device_type);
       }
     } else {
       CAFFE_THROW(
@@ -165,31 +198,9 @@ int main(int argc, char** argv) {
     }
   } else {
     // This comes from https://github.com/caffe2/caffe2/issues/328:
-    VLOG(4) << "DEBUG: GetBlob(" << net_def.external_input(0) << ")...";
-    auto* b = workspace->GetBlob(net_def.external_input(0))
-              ->GetMutable<caffe2::TensorCPU>();
-    b->Resize(split_to_ints(',', caffe2::FLAGS_input_dims));
-    b->mutable_data<float>();
-    VLOG(4) << "DEBUG " << __func__ << ": TensorCPU b=" << b->DebugString();
+    FeedBlob(workspace.get(), net_def.external_input(0),
+             split_to_ints(',', caffe2::FLAGS_input_dims), device_type);
   }
-
-  // force changing engine and algo
-  if (caffe2::FLAGS_force_engine) {
-    LOG(INFO) << "force engine be: " << caffe2::FLAGS_engine;
-    for (const auto& op : net_def.op()) {
-      const_cast<caffe2::OperatorDef*>(&op)->set_engine(caffe2::FLAGS_engine);
-    }
-  }
-  if (caffe2::FLAGS_force_algo) {
-    LOG(INFO) << "force algo be: " << caffe2::FLAGS_algo;
-    for (const auto& op : net_def.op()) {
-      caffe2::GetMutableArgument(
-          "algo", true, const_cast<caffe2::OperatorDef*>(&op))
-          ->set_s(caffe2::FLAGS_algo);
-    }
-  }
-
-  VLOG(4) << "DEBUG: CreateNet...";
   caffe2::NetBase* net = workspace->CreateNet(net_def);
   CHECK_NOTNULL(net);
   VLOG(4) << "DEBUG: net->Run()";
@@ -197,26 +208,6 @@ int main(int argc, char** argv) {
   VLOG(4) << "DEBUG: TEST_Benchmark...";
   net->TEST_Benchmark(
       caffe2::FLAGS_warmup, caffe2::FLAGS_iter, caffe2::FLAGS_run_individual);
-
-  string output_prefix = caffe2::FLAGS_output_folder.size()
-      ? caffe2::FLAGS_output_folder + "/"
-      : "";
-  if (caffe2::FLAGS_output.size()) {
-    vector<string> output_names = caffe2::split(',', caffe2::FLAGS_output);
-    if (caffe2::FLAGS_output == "*") {
-      output_names = workspace->Blobs();
-    }
-    for (const string& name : output_names) {
-      VLOG(4) << "DEBUG " << __func__ << ": output name=" << name;
-      CAFFE_ENFORCE(
-          workspace->HasBlob(name),
-          "You requested a non-existing blob: ",
-          name);
-      string serialized = workspace->GetBlob(name)->Serialize(name);
-      string output_filename = output_prefix + name;
-      caffe2::WriteStringToFile(serialized, output_filename.c_str());
-    }
-  }
 
   return 0;
 }
