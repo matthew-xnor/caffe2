@@ -22,6 +22,9 @@
 #include "caffe2/proto/caffe2.pb.h"
 #include "caffe2/utils/proto_utils.h"
 #include "caffe2/utils/string_utils.h"
+#ifdef WITH_CUDA
+#include <caffe2/core/context_gpu.h>
+#endif
 
 CAFFE2_DEFINE_string(net, "", "The given net to benchmark.");
 CAFFE2_DEFINE_string(init_net, "",
@@ -58,6 +61,7 @@ CAFFE2_DEFINE_string(engine, "", "Forced engine field value");
 CAFFE2_DEFINE_bool(force_algo, false, "Force algo arg for all operators");
 CAFFE2_DEFINE_string(algo, "", "Forced algo arg value");
 
+CAFFE2_DEFINE_string(device, "CPU", "Computation device: CPU|CUDA");
 CAFFE2_DEFINE_string(net_type, "dag",
                      "simple, dag, async_{simple,dag,polling,scheduling}, "
                      "singlethread_async");
@@ -76,6 +80,34 @@ std::vector<int> split_to_ints(char sep, const string& the_string) {
   }
   return the_ints;
 }
+
+// From caffe2_cpp_tutorial/include/caffe2/util/cmd.h
+bool cmd_setup_cuda() {
+  static bool already_done = false;
+  if (already_done) { return true; }
+  already_done = true;
+#ifdef WITH_CUDA
+  DeviceOption option;
+  option.set_device_type(CUDA);
+  new CUDAContext(option);
+  return true;
+#else
+  return false;
+#endif
+}
+
+void SetDevice(const std::string& device_name, caffe2::NetDef* net_def) {
+  caffe2::DeviceType device_type;
+  if (!caffe2::DeviceType_Parse(device_name, &device_type)) {
+    throw std::runtime_error("Invalid device type " + device_name);
+  }
+  if (device_type == caffe2::CUDA) {
+    if (!cmd_setup_cuda()) {
+      throw std::runtime_error("This build does not support CUDA");
+    }
+  }
+  net_def->mutable_device_option()->set_device_type(device_type);
+}
 }  // namespace
 
 
@@ -86,12 +118,14 @@ int main(int argc, char** argv) {
   // Run initialization network.
   caffe2::NetDef net_def;
   CAFFE_ENFORCE(ReadProtoFromFile(caffe2::FLAGS_init_net, &net_def));
+  SetDevice(caffe2::FLAGS_device, &net_def);
   CAFFE_ENFORCE(workspace->RunNetOnce(net_def));
 
   // Load the main network.
   CAFFE_ENFORCE(ReadProtoFromFile(caffe2::FLAGS_net, &net_def));
   net_def.set_type(caffe2::FLAGS_net_type);
   net_def.set_num_workers(caffe2::FLAGS_num_workers);
+  SetDevice(caffe2::FLAGS_device, &net_def);
 
   // Load input.
   if (caffe2::FLAGS_input.size()) {
