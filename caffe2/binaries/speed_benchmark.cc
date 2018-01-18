@@ -35,7 +35,7 @@ CAFFE2_DEFINE_string(input_file, "",
     "the input blobs. If multiple input needed, use comma "
     "separated string. Must have the same number of items "
     "as input does.");
-CAFFE2_DEFINE_string(input_dims, "1,720,1080,4",
+CAFFE2_DEFINE_string(input_dims, "",
     "Alternate to input_files, if all inputs are simple "
     "float TensorCPUs, specify the dimension using comma "
     "separated numbers. If multiple input needed, use "
@@ -197,6 +197,8 @@ int main(int argc, char** argv) {
           "input_dims is set.");
     }
   } else {
+    CAFFE_ENFORCE(!caffe2::FLAGS_input_dims.empty(),
+                  "Must set -input_dims if -input is not set");
     // This comes from https://github.com/caffe2/caffe2/issues/328:
     FeedBlob(workspace.get(), net_def.external_input(0),
              split_to_ints(',', caffe2::FLAGS_input_dims), device_type);
